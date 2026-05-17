@@ -6,6 +6,7 @@
     {
       "type": "timeseries",
       "title": "HTTP Requests / sec",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
       "targets": [
         {
@@ -17,6 +18,7 @@
     {
       "type": "timeseries",
       "title": "HTTP p95 latency",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
       "targets": [
         {
@@ -28,6 +30,7 @@
     {
       "type": "timeseries",
       "title": "Node process CPU usage",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
       "targets": [
         {
@@ -39,6 +42,7 @@
     {
       "type": "timeseries",
       "title": "Node process memory",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
       "targets": [
         {
@@ -50,10 +54,11 @@
     {
       "type": "timeseries",
       "title": "Event loop lag",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
       "targets": [
         {
-          "expr": "nodejs_eventloop_lag_seconds",
+          "expr": "nodejs_nodejs_eventloop_lag_seconds",
           "legendFormat": "{{instance}}"
         }
       ]
@@ -61,6 +66,7 @@
     {
       "type": "timeseries",
       "title": "Queue jobs",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
       "targets": [
         {
