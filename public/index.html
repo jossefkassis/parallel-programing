@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>NestJS E-Commerce Demo</title>
+    <style>
+      body { margin: 0; font-family: Arial, sans-serif; background: #f6f7f9; color: #18202a; }
+      header { padding: 20px 28px; background: #17202a; color: white; display: flex; justify-content: space-between; align-items: center; }
+      main { padding: 24px; display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+      section { background: white; border: 1px solid #d9dee7; border-radius: 8px; padding: 16px; }
+      h2 { font-size: 16px; margin: 0 0 12px; }
+      button { border: 0; background: #1d4ed8; color: white; padding: 9px 12px; border-radius: 6px; cursor: pointer; margin: 4px 4px 4px 0; }
+      button.secondary { background: #475569; }
+      pre { white-space: pre-wrap; word-break: break-word; background: #f1f5f9; padding: 12px; border-radius: 6px; max-height: 260px; overflow: auto; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <strong>NestJS E-Commerce Parallel Programming Demo</strong>
+      <span id="instance">loading...</span>
+    </header>
+    <main>
+      <section>
+        <h2>Race condition</h2>
+        <button onclick="post('/api/demo/race/unsafe')">Unsafe</button>
+        <button onclick="post('/api/demo/race/safe')">Safe</button>
+        <pre id="race"></pre>
+      </section>
+      <section>
+        <h2>1. Compare data integrity</h2>
+        <button onclick="post('/api/demo/compare/race')">Compare unsafe vs safe</button>
+        <pre id="compare-race"></pre>
+      </section>
+      <section>
+        <h2>Resource management</h2>
+        <button onclick="post('/api/demo/resource/uncontrolled')">Uncontrolled</button>
+        <button onclick="post('/api/demo/resource/controlled')">Controlled</button>
+        <pre id="resource"></pre>
+      </section>
+      <section>
+        <h2>2. Compare resource control</h2>
+        <button onclick="post('/api/demo/compare/resource')">Compare uncontrolled vs controlled</button>
+        <pre id="compare-resource"></pre>
+      </section>
+      <section>
+        <h2>Async queue/payment webhook</h2>
+        <button onclick="post('/api/demo/checkout/sync')">Sync checkout</button>
+        <button onclick="post('/api/demo/checkout/webhook')">Webhook checkout</button>
+        <pre id="checkout"></pre>
+      </section>
+      <section>
+        <h2>3. Compare request flow</h2>
+        <button onclick="post('/api/demo/compare/checkout')">Compare sync vs async</button>
+        <pre id="compare-checkout"></pre>
+      </section>
+      <section>
+        <h2>Batch processing</h2>
+        <button onclick="post('/api/demo/batch/all-at-once')">All at once</button>
+        <button onclick="post('/api/demo/batch/chunked')">Chunked</button>
+        <button onclick="post('/api/demo/batch/background-job')">Queue real background job</button>
+        <pre id="batch"></pre>
+      </section>
+      <section>
+        <h2>4. Compare batch strategy</h2>
+        <button onclick="post('/api/demo/compare/batch')">Compare all-at-once vs chunked</button>
+        <pre id="compare-batch"></pre>
+      </section>
+      <section>
+        <h2>Stress test evidence</h2>
+        <button onclick="post('/api/demo/stress/checkout-100')">Run 100 users</button>
+        <button onclick="post('/api/demo/stress/checkout-200')">Run 200 users</button>
+        <pre id="stress"></pre>
+      </section>
+      <section>
+        <h2>Load distribution</h2>
+        <button onclick="pingMany()">Ping through Nginx</button>
+        <pre id="load"></pre>
+      </section>
+      <section>
+        <h2>Current status</h2>
+        <button class="secondary" onclick="post('/api/demo/reset')">Reset demo data</button>
+        <button class="secondary" onclick="refresh()">Refresh</button>
+        <pre id="status"></pre>
+      </section>
+      <section>
+        <h2>Database evidence</h2>
+        <pre id="database"></pre>
+      </section>
+    </main>
+    <script>
+      const slot = (path) => {
+        if (path.includes('compare/race')) return 'compare-race';
+        if (path.includes('compare/resource')) return 'compare-resource';
+        if (path.includes('compare/checkout')) return 'compare-checkout';
+        if (path.includes('compare/batch')) return 'compare-batch';
+        if (path.includes('race')) return 'race';
+        if (path.includes('resource')) return 'resource';
+        if (path.includes('checkout')) return 'checkout';
+        if (path.includes('batch')) return 'batch';
+        if (path.includes('stress')) return 'stress';
+        return 'status';
+      };
+      async function post(path) {
+        const response = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+        const data = await response.json();
+        document.getElementById(slot(path)).textContent = JSON.stringify(data, null, 2);
+        refresh();
+      }
+      async function refresh() {
+        const response = await fetch('/api/demo/dashboard/status');
+        const data = await response.json();
+        document.getElementById('instance').textContent = data.instance;
+        document.getElementById('status').textContent = JSON.stringify(data, null, 2);
+        document.getElementById('database').textContent = JSON.stringify({
+          tableCounts: data.tableCounts,
+          product: data.product,
+          wallet: data.wallet,
+          recentOrders: data.recentOrders,
+          recentJobs: data.recentJobs,
+          dailySalesSummaries: data.dailySalesSummaries
+        }, null, 2);
+      }
+      async function pingMany() {
+        const results = [];
+        for (let i = 0; i < 12; i++) {
+          const response = await fetch('http://localhost:8080/api/demo/load-balancer/ping');
+          results.push(await response.json());
+        }
+        document.getElementById('load').textContent = JSON.stringify(results, null, 2);
+      }
+      refresh();
+    </script>
+  </body>
+</html>

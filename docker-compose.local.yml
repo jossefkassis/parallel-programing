@@ -1,0 +1,47 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: ecommerce-demo-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ecommerce_demo_nest
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    container_name: ecommerce-demo-redis
+    ports:
+      - "6379:6379"
+
+  nginx:
+    image: nginx:1.27
+    container_name: ecommerce-demo-nginx
+    ports:
+      - "8080:80"
+    volumes:
+      - ./infra/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: ecommerce-demo-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: ecommerce-demo-grafana
+    ports:
+      - "3003:3000"
+    volumes:
+      - grafana:/var/lib/grafana
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+
+volumes:
+  pgdata:
+  grafana:
