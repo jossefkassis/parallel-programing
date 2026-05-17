@@ -3,6 +3,7 @@ import { Queue, Worker } from 'bullmq';
 import IORedis from 'ioredis';
 import { DatabaseService } from '../db/database.service';
 import { dailySalesSummaries, jobLogs } from '../db/schema';
+import { ExperimentLoggerService } from '../logging/experiment-logger.service';
 
 @Injectable()
 export class QueuesService implements OnModuleInit, OnModuleDestroy {
@@ -13,7 +14,10 @@ export class QueuesService implements OnModuleInit, OnModuleDestroy {
   private workers: Worker[] = [];
   private dailyTimer?: NodeJS.Timeout;
 
-  constructor(private readonly database: DatabaseService) {
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly logger: ExperimentLoggerService,
+  ) {
     this.connection = new IORedis({
       host: process.env.REDIS_HOST ?? 'localhost',
       port: Number(process.env.REDIS_PORT ?? 6379),
@@ -63,6 +67,7 @@ export class QueuesService implements OnModuleInit, OnModuleDestroy {
   private async logJob(type: string, payload: unknown) {
     await new Promise((resolve) => setTimeout(resolve, 400));
     await this.database.db.insert(jobLogs).values({ type, status: 'completed', payload });
+    await this.logger.write('queues', 'job_completed', { type, payload });
   }
 
   private async processDailySalesSummary(payload: { salesDate: string }) {
@@ -81,6 +86,12 @@ export class QueuesService implements OnModuleInit, OnModuleDestroy {
       processedOrders += rows.rowCount ?? 0;
       totalRevenue += rows.rows.reduce((sum, order) => sum + Number(order.total), 0);
       offset += chunkSize;
+      await this.logger.write('batch', 'chunk_processed', {
+        chunkSize,
+        processedInChunk: rows.rowCount,
+        processedOrders,
+        offset,
+      });
     }
 
     await this.database.db.insert(dailySalesSummaries).values({
@@ -90,6 +101,7 @@ export class QueuesService implements OnModuleInit, OnModuleDestroy {
       chunkSize,
     });
     await this.logJob('daily-sales-summary', { salesDate: payload.salesDate, processedOrders, totalRevenue, chunkSize });
+    await this.logger.write('batch', 'daily_sales_summary_completed', { processedOrders, totalRevenue, chunkSize });
     return { processedOrders, totalRevenue, chunkSize };
   }
 }

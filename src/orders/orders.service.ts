@@ -4,6 +4,7 @@ import { randomUUID } from 'crypto';
 import { DatabaseService } from '../db/database.service';
 import { orderItems, orders, products, wallets } from '../db/schema';
 import { QueuesService } from '../queues/queues.service';
+import { ExperimentLoggerService } from '../logging/experiment-logger.service';
 
 type CheckoutItem = { productId: number; quantity: number };
 
@@ -12,6 +13,7 @@ export class OrdersService {
   constructor(
     private readonly database: DatabaseService,
     private readonly queues: QueuesService,
+    private readonly logger: ExperimentLoggerService,
   ) {}
 
   async createPending(userId: number, items: CheckoutItem[]) {
@@ -58,6 +60,7 @@ export class OrdersService {
         .set({ status: 'payment_failed', paymentStatus: 'failed', updatedAt: new Date() })
         .where(eq(orders.fakePaymentRef, fakePaymentRef))
         .returning();
+      await this.logger.write('orders', 'payment_failed', { fakePaymentRef, reason: 'provider reported failed payment', orderId: updated?.id });
       return updated;
     }
 
@@ -88,6 +91,7 @@ export class OrdersService {
       return updated.rows[0];
     });
     await this.queues.enqueueAfterPayment(order.id);
+    await this.logger.write('orders', 'payment_confirmed', { fakePaymentRef, orderId: order.id, status: order.status });
     return order;
   }
 

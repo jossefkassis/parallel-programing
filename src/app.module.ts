@@ -12,6 +12,7 @@ import { DatabaseModule } from './db/database.module';
 import { ProductsModule } from './products/products.module';
 import { QueuesModule } from './queues/queues.module';
 import { UsersModule } from './users/users.module';
+import { LoggingModule } from './logging/logging.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { UsersModule } from './users/users.module';
     }),
     ThrottlerModule.forRoot([{ ttl: 1000, limit: 50 }]),
     DatabaseModule,
+    LoggingModule,
     MetricsModule,
     QueuesModule,
     ProductsModule,

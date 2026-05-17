@@ -7,6 +7,7 @@ import { OrdersService } from '../orders/orders.service';
 import { PaymentsService } from '../payments/payments.service';
 import { QueuesService } from '../queues/queues.service';
 import { ZodPipe } from '../validation/zod.pipe';
+import { ExperimentLoggerService } from '../logging/experiment-logger.service';
 
 const raceSchema = z.object({ productId: z.coerce.number().int().positive().default(1), requests: z.coerce.number().int().positive().default(25) });
 const checkoutSchema = z.object({ userId: z.coerce.number().int().positive().default(1), productId: z.coerce.number().int().positive().default(1), quantity: z.coerce.number().int().positive().default(1) });
@@ -18,6 +19,7 @@ export class DemoController {
     private readonly ordersService: OrdersService,
     private readonly payments: PaymentsService,
     private readonly queues: QueuesService,
+    private readonly logger: ExperimentLoggerService,
   ) {}
 
   @Get('health')
@@ -97,7 +99,15 @@ export class DemoController {
     await new Promise((resolve) => setTimeout(resolve, 2500));
     const order = await this.ordersService.confirmPayment(pending.fakePaymentRef, true);
     await new Promise((resolve) => setTimeout(resolve, 800));
-    return { mode: 'sync', durationMs: Math.round(performance.now() - start), order };
+    const result = { mode: 'sync', durationMs: Math.round(performance.now() - start), order };
+    await this.logger.write('checkout', 'sync_completed', {
+      userId: body.userId,
+      productId: body.productId,
+      quantity: body.quantity,
+      durationMs: result.durationMs,
+      orderId: order.id,
+    });
+    return result;
   }
 
   @Post('demo/checkout/webhook')
@@ -105,7 +115,16 @@ export class DemoController {
     const start = performance.now();
     const pending = await this.ordersService.createPending(body.userId, [{ productId: body.productId, quantity: body.quantity }]);
     const payment = await this.payments.start(pending.fakePaymentRef, true);
-    return { mode: 'webhook', requestDurationMs: Math.round(performance.now() - start), order: pending.order, payment };
+    const result = { mode: 'webhook', requestDurationMs: Math.round(performance.now() - start), order: pending.order, payment };
+    await this.logger.write('checkout', 'webhook_request_returned', {
+      userId: body.userId,
+      productId: body.productId,
+      quantity: body.quantity,
+      requestDurationMs: result.requestDurationMs,
+      orderId: pending.order.id,
+      providerDelayMs: payment.delayMs,
+    });
+    return result;
   }
 
   @Post('demo/compare/checkout')
@@ -129,7 +148,9 @@ export class DemoController {
     const start = performance.now();
     const rows = await this.database.pool.query('SELECT * FROM orders WHERE created_at::date = current_date');
     const totalRevenue = rows.rows.reduce((sum, order) => sum + Number(order.total), 0);
-    return { mode: 'all-at-once', processed: rows.rowCount, totalRevenue, durationMs: Math.round(performance.now() - start), memoryDelta: process.memoryUsage().heapUsed - startMemory };
+    const summary = { mode: 'all-at-once', processed: rows.rowCount, totalRevenue, durationMs: Math.round(performance.now() - start), memoryDelta: process.memoryUsage().heapUsed - startMemory };
+    await this.logger.write('batch', 'all_at_once_completed', summary);
+    return summary;
   }
 
   @Post('demo/batch/chunked')
@@ -147,13 +168,27 @@ export class DemoController {
       totalRevenue += rows.rows.reduce((sum, order) => sum + Number(order.total), 0);
       offset += chunkSize;
     }
-    return { mode: 'chunked', chunkSize, processed, totalRevenue, durationMs: Math.round(performance.now() - start), memoryDelta: process.memoryUsage().heapUsed - startMemory };
+    const summary = { mode: 'chunked', chunkSize, processed, totalRevenue, durationMs: Math.round(performance.now() - start), memoryDelta: process.memoryUsage().heapUsed - startMemory };
+    await this.logger.write('batch', 'chunked_completed', summary);
+    return summary;
   }
 
   @Post('demo/batch/background-job')
   async batchBackgroundJob() {
     const job = await this.queues.enqueueDailySalesSummary();
     return { queued: true, queue: 'reports', jobId: job.id, purpose: 'daily sales summary processed in chunks by a background worker' };
+  }
+
+  @Post('demo/batch/seed-orders')
+  async seedBatchOrders() {
+    const inserted = await this.database.pool.query(`
+      INSERT INTO orders (user_id, status, payment_status, total, fake_payment_ref)
+      SELECT 1, 'confirmed', 'succeeded', ((gs % 9) + 1) * 25, 'batch-demo-' || gs || '-' || extract(epoch from clock_timestamp())
+      FROM generate_series(1, 1200) AS gs
+      RETURNING id
+    `);
+    await this.logger.write('batch', 'seeded_demo_orders', { ordersInserted: inserted.rowCount });
+    return { insertedOrders: inserted.rowCount, purpose: 'enough rows to demonstrate multiple 500-row chunks' };
   }
 
   @Post('demo/compare/batch')
@@ -183,7 +218,9 @@ export class DemoController {
 
   @Get('demo/load-balancer/ping')
   ping() {
-    return { instance: process.env.INSTANCE_NAME ?? 'app-local', port: process.env.PORT ?? 3000 };
+    const result = { instance: process.env.INSTANCE_NAME ?? 'app-local', port: process.env.PORT ?? 3000 };
+    void this.logger.write('load-balancer', 'request_handled', result);
+    return result;
   }
 
   @Get('demo/dashboard/status')
@@ -225,7 +262,7 @@ export class DemoController {
       Array.from({ length: requests }, () => (safe ? this.ordersService.safeBuy(productId, 1) : this.ordersService.unsafeBuy(productId, 1))),
     );
     const [product] = await this.database.db.select().from(products).where(eq(products.id, productId));
-    return {
+    const summary = {
       mode: safe ? 'safe' : 'unsafe',
       initialStock: requests,
       finalStock: product.stock,
@@ -233,6 +270,8 @@ export class DemoController {
       failedOrders: results.filter((result) => result.status === 'rejected').length,
       durationMs: Math.round(performance.now() - started),
     };
+    await this.logger.write('race', safe ? 'safe_run_completed' : 'unsafe_run_completed', summary);
+    return summary;
   }
 
   private async resourceWork(total: number, concurrency: number, controlled: boolean) {
@@ -257,7 +296,15 @@ export class DemoController {
     } else {
       await Promise.all(Array.from({ length: total }, () => task()));
     }
-    return { mode: controlled ? 'controlled' : 'uncontrolled', total, concurrencyLimit: controlled ? concurrency : null, peakActive, durationMs: Math.round(performance.now() - start), memory: process.memoryUsage() };
+    const summary = { mode: controlled ? 'controlled' : 'uncontrolled', total, concurrencyLimit: controlled ? concurrency : null, peakActive, durationMs: Math.round(performance.now() - start), memory: process.memoryUsage() };
+    await this.logger.write('resource-management', controlled ? 'controlled_run_completed' : 'uncontrolled_run_completed', {
+      total,
+      concurrencyLimit: summary.concurrencyLimit,
+      peakActive,
+      durationMs: summary.durationMs,
+      reason: controlled ? 'work was capped to reduce pressure' : 'all work started at once',
+    });
+    return summary;
   }
 
   private async runStress(requests: number) {
@@ -271,7 +318,10 @@ export class DemoController {
       }),
     );
     const after = await this.snapshot();
-    return {
+    const rejected = results
+      .filter((result) => result.status === 'rejected')
+      .map((result) => (result.status === 'rejected' ? String(result.reason?.message ?? result.reason) : ''));
+    const summary = {
       scenario: `checkout-${requests}`,
       virtualUsers: requests,
       durationMs: Math.round(performance.now() - started),
@@ -284,6 +334,17 @@ export class DemoController {
           ? 'PASS: no lost updates and every checkout produced an order'
           : 'FAIL: stock or order-count mismatch',
     };
+    await this.logger.write('stress', 'checkout_stress_completed', {
+      requests,
+      successfulRequests: summary.successfulRequests,
+      failedRequests: summary.failedRequests,
+      failureReasons: rejected,
+      durationMs: summary.durationMs,
+      before,
+      after,
+      invariant: summary.invariant,
+    });
+    return summary;
   }
 
   private async snapshot() {

@@ -1,10 +1,14 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { createHmac } from 'crypto';
 import { OrdersService } from '../orders/orders.service';
+import { ExperimentLoggerService } from '../logging/experiment-logger.service';
 
 @Injectable()
 export class PaymentsService {
-  constructor(private readonly orders: OrdersService) {}
+  constructor(
+    private readonly orders: OrdersService,
+    private readonly logger: ExperimentLoggerService,
+  ) {}
 
   sign(payload: object) {
     return createHmac('sha256', process.env.FAKE_PAYMENT_SECRET ?? 'local-secret')
@@ -13,11 +17,25 @@ export class PaymentsService {
   }
 
   async start(fakePaymentRef: string, succeed = true) {
+    const queuedAt = performance.now();
     setTimeout(async () => {
       const payload = { fakePaymentRef, success: succeed };
       try {
+        const webhookStarted = performance.now();
         await this.handleWebhook(payload, this.sign(payload));
+        await this.logger.write('checkout', 'webhook_completed', {
+          fakePaymentRef,
+          success: succeed,
+          providerDelayMs: Math.round(webhookStarted - queuedAt),
+          webhookHandlerDurationMs: Math.round(performance.now() - webhookStarted),
+          totalUntilWebhookCompletedMs: Math.round(performance.now() - queuedAt),
+        });
       } catch (error) {
+        await this.logger.write('checkout', 'webhook_failed', {
+          fakePaymentRef,
+          success: succeed,
+          reason: error instanceof Error ? error.message : String(error),
+        });
         console.error('Fake payment webhook failed', error);
       }
     }, 2500);
