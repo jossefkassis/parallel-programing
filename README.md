@@ -29,9 +29,9 @@ Nginx listens on `http://localhost:8080`.
 
 ## Main URLs
 
-- API health: `http://localhost:3000/api/health`
-- Dashboard: `http://localhost:3000/dashboard`
-- Metrics: `http://localhost:3000/metrics`
+- API health for app1: `http://localhost:3001/api/health`
+- Dashboard through Nginx: `http://localhost:8080/dashboard`
+- Metrics for app1: `http://localhost:3001/metrics`
 - Prometheus: `http://localhost:9090`
 - Grafana: `http://localhost:3003`
 
@@ -47,6 +47,14 @@ k6 run tests/k6/checkout-webhook.js
 k6 run tests/k6/stress-checkout-100.js
 k6 run tests/k6/stress-checkout-200.js
 k6 run tests/k6/load-balancer.js
+```
+
+By default, non-load-balancer k6 scripts target `http://localhost:3001`.  
+Override when needed:
+
+```bash
+k6 run -e APP_BASE_URL=http://localhost:3002 tests/k6/checkout-webhook.js
+k6 run -e APP_BASE_URL=http://localhost:8080 tests/k6/stress-checkout-100.js
 ```
 
 ## Evidence dashboard

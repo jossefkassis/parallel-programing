@@ -85,13 +85,13 @@ These files record failed payment outcomes and rejected stress-test requests wit
 Before comparing batch behavior, generate enough data:
 
 ```bash
-curl -X POST http://localhost:3000/api/demo/batch/seed-orders
+curl -X POST http://localhost:3001/api/demo/batch/seed-orders
 ```
 
 Then run:
 
 ```bash
-curl -X POST http://localhost:3000/api/demo/batch/background-job
+curl -X POST http://localhost:3001/api/demo/batch/background-job
 ```
 
 Open:

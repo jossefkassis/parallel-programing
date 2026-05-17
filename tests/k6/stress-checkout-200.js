@@ -1,11 +1,12 @@
 import http from 'k6/http';
 import { check } from 'k6';
+import { APP_BASE_URL } from './config.js';
 
 export const options = { vus: 200, iterations: 200 };
 
 export default function () {
   const response = http.post(
-    'http://localhost:3000/api/demo/checkout/webhook',
+    `${APP_BASE_URL}/api/demo/checkout/webhook`,
     JSON.stringify({ userId: 1, productId: 1, quantity: 1 }),
     { headers: { 'Content-Type': 'application/json' } },
   );
