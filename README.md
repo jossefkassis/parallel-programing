@@ -64,5 +64,6 @@ Arabic submission files:
 
 - `docs/report-ar.md`
 - `docs/testing-and-screenshots-ar.md`
+- `docs/report-screenshot-plan.md`
 
 The Laravel folder is not used by this project.

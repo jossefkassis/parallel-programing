@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: NestJS Monitoring
+    orgId: 1
+    folder: Parallel Programming
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
