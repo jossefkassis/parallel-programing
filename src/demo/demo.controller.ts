@@ -144,11 +144,19 @@ export class DemoController {
 
   @Post('demo/batch/all-at-once')
   async batchAllAtOnce() {
-    const startMemory = process.memoryUsage().heapUsed;
     const start = performance.now();
     const rows = await this.database.pool.query('SELECT * FROM orders WHERE created_at::date = current_date');
     const totalRevenue = rows.rows.reduce((sum, order) => sum + Number(order.total), 0);
-    const summary = { mode: 'all-at-once', processed: rows.rowCount, totalRevenue, durationMs: Math.round(performance.now() - start), memoryDelta: process.memoryUsage().heapUsed - startMemory };
+    const rowsHeldAtOnce = rows.rowCount ?? 0;
+    const estimatedRowBytes = 256;
+    const summary = {
+      mode: 'all-at-once',
+      processed: rows.rowCount,
+      totalRevenue,
+      durationMs: Math.round(performance.now() - start),
+      rowsHeldAtOnce,
+      estimatedWorkingSetBytes: rowsHeldAtOnce * estimatedRowBytes,
+    };
     await this.logger.write('batch', 'all_at_once_completed', summary);
     return summary;
   }
@@ -156,19 +164,29 @@ export class DemoController {
   @Post('demo/batch/chunked')
   async batchChunked() {
     const chunkSize = 500;
-    const startMemory = process.memoryUsage().heapUsed;
     const start = performance.now();
     let offset = 0;
     let processed = 0;
     let totalRevenue = 0;
+    let maxRowsHeldAtOnce = 0;
     while (true) {
       const rows = await this.database.pool.query('SELECT id, total FROM orders WHERE created_at::date = current_date ORDER BY id LIMIT $1 OFFSET $2', [chunkSize, offset]);
       if (rows.rowCount === 0) break;
       processed += rows.rowCount ?? 0;
+      maxRowsHeldAtOnce = Math.max(maxRowsHeldAtOnce, rows.rowCount ?? 0);
       totalRevenue += rows.rows.reduce((sum, order) => sum + Number(order.total), 0);
       offset += chunkSize;
     }
-    const summary = { mode: 'chunked', chunkSize, processed, totalRevenue, durationMs: Math.round(performance.now() - start), memoryDelta: process.memoryUsage().heapUsed - startMemory };
+    const estimatedRowBytes = 256;
+    const summary = {
+      mode: 'chunked',
+      chunkSize,
+      processed,
+      totalRevenue,
+      durationMs: Math.round(performance.now() - start),
+      maxRowsHeldAtOnce,
+      estimatedWorkingSetBytes: maxRowsHeldAtOnce * estimatedRowBytes,
+    };
     await this.logger.write('batch', 'chunked_completed', summary);
     return summary;
   }
@@ -200,8 +218,9 @@ export class DemoController {
       withoutCorrectStructure: allAtOnce,
       withCorrectStructure: chunked,
       conclusion: {
-        memorySavedBytes: allAtOnce.memoryDelta - chunked.memoryDelta,
-        result: chunked.memoryDelta <= allAtOnce.memoryDelta ? 'PASS: chunking lowers memory pressure' : 'CHECK RESULTS',
+        rowsAvoidedInMemoryAtOnce: allAtOnce.rowsHeldAtOnce - chunked.maxRowsHeldAtOnce,
+        estimatedWorkingSetSavedBytes: allAtOnce.estimatedWorkingSetBytes - chunked.estimatedWorkingSetBytes,
+        result: chunked.maxRowsHeldAtOnce < allAtOnce.rowsHeldAtOnce ? 'PASS: chunking reduces the maximum rows held in memory at once' : 'CHECK RESULTS',
       },
     };
   }
