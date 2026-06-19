@@ -67,6 +67,29 @@
         <pre id="compare-batch"></pre>
       </section>
       <section>
+        <h2>6. Distributed cache</h2>
+        <button class="secondary" onclick="clearPopularCache()">Clear cache</button>
+        <button onclick="getPopularProducts()">Popular products cache</button>
+        <pre id="cache"></pre>
+      </section>
+      <section>
+        <h2>7. Redis inventory lock</h2>
+        <button onclick="post('/api/demo/lock/redis')">Redis lock</button>
+        <button onclick="post('/api/demo/compare/locking')">Compare unsafe vs Redis lock</button>
+        <pre id="redis-lock"></pre>
+      </section>
+      <section>
+        <h2>8. ACID transaction</h2>
+        <button onclick="acidDemo(false)">Commit transaction</button>
+        <button onclick="acidDemo(true)">Force rollback</button>
+        <pre id="acid"></pre>
+      </section>
+      <section>
+        <h2>10. Bottleneck benchmark</h2>
+        <button onclick="post('/api/demo/benchmark/n-plus-one')">Compare N+1 vs aggregate</button>
+        <pre id="benchmark"></pre>
+      </section>
+      <section>
         <h2>Stress test evidence</h2>
         <button onclick="post('/api/demo/stress/checkout-100')">Run 100 users</button>
         <button onclick="post('/api/demo/stress/checkout-200')">Run 200 users</button>
@@ -94,6 +117,8 @@
         if (path.includes('compare/resource')) return 'compare-resource';
         if (path.includes('compare/checkout')) return 'compare-checkout';
         if (path.includes('compare/batch')) return 'compare-batch';
+        if (path.includes('lock/redis') || path.includes('compare/locking')) return 'redis-lock';
+        if (path.includes('benchmark')) return 'benchmark';
         if (path.includes('race')) return 'race';
         if (path.includes('resource')) return 'resource';
         if (path.includes('checkout')) return 'checkout';
@@ -120,6 +145,28 @@
           recentJobs: data.recentJobs,
           dailySalesSummaries: data.dailySalesSummaries
         }, null, 2);
+      }
+      async function getPopularProducts() {
+        const first = await fetch('/api/products/popular');
+        const firstData = await first.json();
+        const second = await fetch('/api/products/popular');
+        const secondData = await second.json();
+        document.getElementById('cache').textContent = JSON.stringify({ firstCall: firstData, secondCall: secondData }, null, 2);
+      }
+      async function clearPopularCache() {
+        const response = await fetch('/api/products/popular/cache', { method: 'DELETE' });
+        const data = await response.json();
+        document.getElementById('cache').textContent = JSON.stringify(data, null, 2);
+      }
+      async function acidDemo(fail) {
+        const response = await fetch('/api/demo/acid/transaction', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ fail })
+        });
+        const data = await response.json();
+        document.getElementById('acid').textContent = JSON.stringify(data, null, 2);
+        refresh();
       }
       async function pingMany() {
         const results = [];

@@ -5,6 +5,7 @@ import { DatabaseService } from '../db/database.service';
 import { orderItems, orders, products, wallets } from '../db/schema';
 import { QueuesService } from '../queues/queues.service';
 import { ExperimentLoggerService } from '../logging/experiment-logger.service';
+import { RedisService } from '../redis/redis.service';
 
 type CheckoutItem = { productId: number; quantity: number };
 
@@ -14,6 +15,7 @@ export class OrdersService {
     private readonly database: DatabaseService,
     private readonly queues: QueuesService,
     private readonly logger: ExperimentLoggerService,
+    private readonly redis: RedisService,
   ) {}
 
   async createPending(userId: number, items: CheckoutItem[]) {
@@ -90,6 +92,7 @@ export class OrdersService {
       );
       return updated.rows[0];
     });
+    await this.redis.del('products:popular:v1');
     await this.queues.enqueueAfterPayment(order.id);
     await this.logger.write('orders', 'payment_confirmed', { fakePaymentRef, orderId: order.id, status: order.status });
     return order;
@@ -117,6 +120,20 @@ export class OrdersService {
         productId,
       ]);
       return updated.rows[0];
+    });
+  }
+
+  async redisLockedBuy(productId: number, quantity: number) {
+    return this.redis.withLock(`locks:inventory:${productId}`, 5000, async () => {
+      const [product] = await this.database.db.select().from(products).where(eq(products.id, productId));
+      if (!product || product.stock < quantity) throw new BadRequestException('Insufficient stock');
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      const [updated] = await this.database.db
+        .update(products)
+        .set({ stock: product.stock - quantity, updatedAt: new Date() })
+        .where(eq(products.id, productId))
+        .returning();
+      return updated;
     });
   }
 

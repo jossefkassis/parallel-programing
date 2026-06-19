@@ -6,11 +6,13 @@ import { orderItems, orders, products, users, wallets } from '../db/schema';
 import { OrdersService } from '../orders/orders.service';
 import { PaymentsService } from '../payments/payments.service';
 import { QueuesService } from '../queues/queues.service';
+import { RedisService } from '../redis/redis.service';
 import { ZodPipe } from '../validation/zod.pipe';
 import { ExperimentLoggerService } from '../logging/experiment-logger.service';
 
 const raceSchema = z.object({ productId: z.coerce.number().int().positive().default(1), requests: z.coerce.number().int().positive().default(25) });
 const checkoutSchema = z.object({ userId: z.coerce.number().int().positive().default(1), productId: z.coerce.number().int().positive().default(1), quantity: z.coerce.number().int().positive().default(1) });
+const acidSchema = z.object({ fail: z.coerce.boolean().default(false) });
 
 @Controller()
 export class DemoController {
@@ -19,6 +21,7 @@ export class DemoController {
     private readonly ordersService: OrdersService,
     private readonly payments: PaymentsService,
     private readonly queues: QueuesService,
+    private readonly redis: RedisService,
     private readonly logger: ExperimentLoggerService,
   ) {}
 
@@ -39,6 +42,7 @@ export class DemoController {
       { name: 'Mouse', price: '80.00', stock: 100 },
       { name: 'Monitor', price: '900.00', stock: 40 },
     ]).returning();
+    await this.redis.del('products:popular:v1');
     return { user, products: insertedProducts };
   }
 
@@ -63,6 +67,26 @@ export class DemoController {
       conclusion: {
         databaseEffect: `unsafe final stock=${unsafe.finalStock}, safe final stock=${safe.finalStock}`,
         result: safe.finalStock === 0 && unsafe.finalStock !== safe.finalStock ? 'PASS: row locking prevents lost updates' : 'CHECK RESULTS',
+      },
+    };
+  }
+
+  @Post('demo/lock/redis')
+  async redisLock(@Body(new ZodPipe(raceSchema)) body: z.infer<typeof raceSchema>) {
+    return this.runRedisLock(body.productId, body.requests);
+  }
+
+  @Post('demo/compare/locking')
+  async compareLocking() {
+    const unsafe = await this.runRace(1, 25, false);
+    const redisLock = await this.runRedisLock(1, 25);
+    return {
+      topic: 'Concurrency control with a shared Redis lock',
+      withoutCorrectStructure: unsafe,
+      withCorrectStructure: redisLock,
+      conclusion: {
+        databaseEffect: `unsafe final stock=${unsafe.finalStock}, redis-lock final stock=${redisLock.finalStock}`,
+        result: redisLock.finalStock === 0 && unsafe.finalStock !== redisLock.finalStock ? 'PASS: Redis distributed lock prevents concurrent inventory updates across app instances' : 'CHECK RESULTS',
       },
     };
   }
@@ -225,6 +249,113 @@ export class DemoController {
     };
   }
 
+  @Post('demo/acid/transaction')
+  async acidTransaction(@Body(new ZodPipe(acidSchema)) body: z.infer<typeof acidSchema>) {
+    const before = await this.acidSnapshot();
+    let result: { committed: boolean; error?: string; orderId?: number };
+
+    try {
+      const orderId = await this.database.transaction(async (client) => {
+        const orderResult = await client.query(
+          "INSERT INTO orders (user_id, status, payment_status, total, fake_payment_ref) VALUES (1, 'pending_payment', 'pending', 120, 'acid-demo-' || extract(epoch from clock_timestamp())) RETURNING id",
+        );
+        const orderId = orderResult.rows[0].id;
+
+        await client.query('UPDATE wallets SET balance = balance - 120, updated_at = now() WHERE user_id = 1');
+        await client.query('UPDATE products SET stock = stock - 1, updated_at = now() WHERE id = 1');
+
+        if (body.fail) {
+          throw new Error('Forced failure after wallet and stock updates, before order confirmation');
+        }
+
+        await client.query("UPDATE orders SET status = 'confirmed', payment_status = 'succeeded', updated_at = now() WHERE id = $1", [orderId]);
+        return orderId;
+      });
+
+      result = { committed: true, orderId };
+    } catch (error) {
+      result = { committed: false, error: error instanceof Error ? error.message : String(error) };
+    }
+
+    const after = await this.acidSnapshot();
+    const summary = {
+      scenario: body.fail ? 'forced-rollback' : 'successful-commit',
+      result,
+      before,
+      after,
+      proof: body.fail
+        ? after.walletBalance === before.walletBalance && after.productStock === before.productStock && after.orderCount === before.orderCount
+          ? 'PASS: forced failure rolled back wallet, product, and order changes'
+          : 'FAIL: rollback did not restore all tables'
+        : Number(after.walletBalance) === Number(before.walletBalance) - 120 && after.productStock === before.productStock - 1 && after.orderCount === before.orderCount + 1
+          ? 'PASS: wallet, product, and order changes committed together'
+          : 'FAIL: commit did not update all expected tables',
+    };
+    await this.logger.write('acid', 'transaction_demo_completed', summary);
+    return summary;
+  }
+
+  @Post('demo/benchmark/n-plus-one')
+  async benchmarkNPlusOne() {
+    const productRows = await this.database.pool.query('SELECT id, name FROM products ORDER BY id');
+
+    const slowStart = performance.now();
+    const slowRows: Array<{ id: number; name: string; soldQuantity: number }> = [];
+    let slowQueryCount = 1;
+    for (const product of productRows.rows) {
+      const sold = await this.database.pool.query(
+        `
+          SELECT COALESCE(SUM(oi.quantity), 0)::int AS sold_quantity
+          FROM order_items oi
+          JOIN orders o ON o.id = oi.order_id
+          WHERE oi.product_id = $1 AND o.status = 'confirmed'
+        `,
+        [product.id],
+      );
+      slowQueryCount += 1;
+      slowRows.push({ ...product, soldQuantity: sold.rows[0].sold_quantity });
+    }
+    const slowDurationMs = Math.round(performance.now() - slowStart);
+
+    const optimizedStart = performance.now();
+    const optimized = await this.database.pool.query(`
+      SELECT
+        p.id,
+        p.name,
+        COALESCE(SUM(oi.quantity) FILTER (WHERE o.status = 'confirmed'), 0)::int AS sold_quantity
+      FROM products p
+      LEFT JOIN order_items oi ON oi.product_id = p.id
+      LEFT JOIN orders o ON o.id = oi.order_id
+      GROUP BY p.id, p.name
+      ORDER BY p.id
+    `);
+    const optimizedDurationMs = Math.round(performance.now() - optimizedStart);
+
+    const summary = {
+      topic: 'Benchmarking and bottleneck analysis',
+      bottleneck: 'N+1 database queries while calculating product sales totals',
+      beforeOptimization: {
+        strategy: 'one query for products, then one sales query per product',
+        queryCount: slowQueryCount,
+        durationMs: slowDurationMs,
+        rows: slowRows,
+      },
+      afterOptimization: {
+        strategy: 'single aggregate SQL query with JOIN and GROUP BY',
+        queryCount: 1,
+        durationMs: optimizedDurationMs,
+        rows: optimized.rows,
+      },
+      improvement: {
+        queriesReducedBy: slowQueryCount - 1,
+        durationImprovementMs: slowDurationMs - optimizedDurationMs,
+        result: optimizedDurationMs <= slowDurationMs && slowQueryCount > 1 ? 'PASS: aggregate query removes the N+1 bottleneck' : 'CHECK RESULTS',
+      },
+    };
+    await this.logger.write('benchmark', 'n_plus_one_benchmark_completed', summary);
+    return summary;
+  }
+
   @Post('demo/stress/checkout-100')
   stress100() {
     return this.runStress(100);
@@ -290,6 +421,24 @@ export class DemoController {
       durationMs: Math.round(performance.now() - started),
     };
     await this.logger.write('race', safe ? 'safe_run_completed' : 'unsafe_run_completed', summary);
+    return summary;
+  }
+
+  private async runRedisLock(productId: number, requests: number) {
+    await this.database.db.update(products).set({ stock: requests }).where(eq(products.id, productId));
+    const started = performance.now();
+    const results = await Promise.allSettled(Array.from({ length: requests }, () => this.ordersService.redisLockedBuy(productId, 1)));
+    const [product] = await this.database.db.select().from(products).where(eq(products.id, productId));
+    const summary = {
+      mode: 'redis-lock',
+      lock: `locks:inventory:${productId}`,
+      initialStock: requests,
+      finalStock: product.stock,
+      successfulOrders: results.filter((result) => result.status === 'fulfilled').length,
+      failedOrders: results.filter((result) => result.status === 'rejected').length,
+      durationMs: Math.round(performance.now() - started),
+    };
+    await this.logger.write('redis-lock', 'redis_lock_run_completed', summary);
     return summary;
   }
 
@@ -370,5 +519,21 @@ export class DemoController {
     const [product] = await this.database.db.select().from(products).where(eq(products.id, 1));
     const counts = await this.database.pool.query('SELECT count(*)::int AS orders FROM orders');
     return { productStock: product.stock, orderCount: counts.rows[0].orders };
+  }
+
+  private async acidSnapshot() {
+    const rows = await this.database.pool.query(`
+      SELECT
+        (SELECT balance::text FROM wallets WHERE user_id = 1) AS wallet_balance,
+        (SELECT stock FROM products WHERE id = 1) AS product_stock,
+        (SELECT count(*)::int FROM orders) AS order_count,
+        (SELECT count(*)::int FROM orders WHERE status = 'confirmed' AND payment_status = 'succeeded') AS confirmed_orders
+    `);
+    return {
+      walletBalance: rows.rows[0].wallet_balance,
+      productStock: rows.rows[0].product_stock,
+      orderCount: rows.rows[0].order_count,
+      confirmedOrders: rows.rows[0].confirmed_orders,
+    };
   }
 }
