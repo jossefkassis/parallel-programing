@@ -13,6 +13,14 @@ import { ExperimentLoggerService } from '../logging/experiment-logger.service';
 const raceSchema = z.object({ productId: z.coerce.number().int().positive().default(1), requests: z.coerce.number().int().positive().default(25) });
 const checkoutSchema = z.object({ userId: z.coerce.number().int().positive().default(1), productId: z.coerce.number().int().positive().default(1), quantity: z.coerce.number().int().positive().default(1) });
 const acidSchema = z.object({ fail: z.coerce.boolean().default(false) });
+const acidDirectSchema = z.object({
+  userId: z.coerce.number().int().positive().default(1),
+  items: z
+    .array(z.object({ productId: z.coerce.number().int().positive(), quantity: z.coerce.number().int().positive() }))
+    .min(1)
+    .default([{ productId: 1, quantity: 1 }]),
+  failPayment: z.coerce.boolean().default(false),
+});
 
 @Controller()
 export class DemoController {
@@ -42,7 +50,7 @@ export class DemoController {
       { name: 'Mouse', price: '80.00', stock: 100 },
       { name: 'Monitor', price: '900.00', stock: 40 },
     ]).returning();
-    await this.redis.del('products:popular:v1');
+    await this.redis.del('products:popular:v1', 'product:1', 'product:2', 'product:3');
     return { user, products: insertedProducts };
   }
 
@@ -74,6 +82,11 @@ export class DemoController {
   @Post('demo/lock/redis')
   async redisLock(@Body(new ZodPipe(raceSchema)) body: z.infer<typeof raceSchema>) {
     return this.runRedisLock(body.productId, body.requests);
+  }
+
+  @Post('demo/lock/optimistic')
+  async optimisticLock(@Body(new ZodPipe(raceSchema)) body: z.infer<typeof raceSchema>) {
+    return this.runOptimisticLock(body.productId, body.requests);
   }
 
   @Post('demo/compare/locking')
@@ -149,6 +162,45 @@ export class DemoController {
       providerDelayMs: payment.delayMs,
     });
     return result;
+  }
+
+  @Post('demo/checkout/acid-direct')
+  async checkoutAcidDirect(@Body(new ZodPipe(acidDirectSchema)) body: z.infer<typeof acidDirectSchema>) {
+    const before = await this.acidSnapshot();
+    let result: { committed: boolean; error?: string; orderId?: number; total?: string; lockedProductIds?: number[] };
+
+    try {
+      const checkout = await this.ordersService.acidDirectCheckout(body.userId, body.items, body.failPayment);
+      result = {
+        committed: true,
+        orderId: checkout.order.id,
+        total: checkout.total,
+        lockedProductIds: checkout.lockedProductIds,
+      };
+    } catch (error) {
+      result = { committed: false, error: error instanceof Error ? error.message : String(error) };
+    }
+
+    const after = await this.acidSnapshot();
+    const expectedDebit = Number(result.total ?? 0);
+    const summary = {
+      scenario: body.failPayment ? 'direct-checkout-forced-rollback' : 'direct-checkout-commit',
+      result,
+      before,
+      after,
+      proof: body.failPayment
+        ? after.walletBalance === before.walletBalance && after.productStock === before.productStock && after.orderCount === before.orderCount
+          ? 'PASS: payment failure rolled back wallet, stock, order, and order item changes'
+          : 'FAIL: rollback did not restore all tables'
+        : result.committed &&
+            Number(after.walletBalance) === Number(before.walletBalance) - expectedDebit &&
+            after.productStock < before.productStock &&
+            after.orderCount === before.orderCount + 1
+          ? 'PASS: wallet debit, stock update, order creation, and payment status committed together'
+          : 'FAIL: commit did not update all expected tables',
+    };
+    await this.logger.write('acid', 'direct_checkout_completed', summary);
+    return summary;
   }
 
   @Post('demo/compare/checkout')
@@ -406,7 +458,8 @@ export class DemoController {
   }
 
   private async runRace(productId: number, requests: number, safe: boolean) {
-    await this.database.db.update(products).set({ stock: requests }).where(eq(products.id, productId));
+    await this.database.db.update(products).set({ stock: requests, version: 0, updatedAt: new Date() }).where(eq(products.id, productId));
+    await this.redis.del('products:popular:v1', `product:${productId}`);
     const started = performance.now();
     const results = await Promise.allSettled(
       Array.from({ length: requests }, () => (safe ? this.ordersService.safeBuy(productId, 1) : this.ordersService.unsafeBuy(productId, 1))),
@@ -425,7 +478,8 @@ export class DemoController {
   }
 
   private async runRedisLock(productId: number, requests: number) {
-    await this.database.db.update(products).set({ stock: requests }).where(eq(products.id, productId));
+    await this.database.db.update(products).set({ stock: requests, version: 0, updatedAt: new Date() }).where(eq(products.id, productId));
+    await this.redis.del('products:popular:v1', `product:${productId}`);
     const started = performance.now();
     const results = await Promise.allSettled(Array.from({ length: requests }, () => this.ordersService.redisLockedBuy(productId, 1)));
     const [product] = await this.database.db.select().from(products).where(eq(products.id, productId));
@@ -439,6 +493,29 @@ export class DemoController {
       durationMs: Math.round(performance.now() - started),
     };
     await this.logger.write('redis-lock', 'redis_lock_run_completed', summary);
+    return summary;
+  }
+
+  private async runOptimisticLock(productId: number, requests: number) {
+    await this.database.db.update(products).set({ stock: requests, version: 0, updatedAt: new Date() }).where(eq(products.id, productId));
+    await this.redis.del('products:popular:v1', `product:${productId}`);
+    const started = performance.now();
+    const results = await Promise.allSettled(Array.from({ length: requests }, () => this.ordersService.optimisticBuy(productId, 1)));
+    const [product] = await this.database.db.select().from(products).where(eq(products.id, productId));
+    const summary = {
+      mode: 'optimistic-lock',
+      initialStock: requests,
+      finalStock: product.stock,
+      finalVersion: product.version,
+      successfulOrders: results.filter((result) => result.status === 'fulfilled').length,
+      failedOrders: results.filter((result) => result.status === 'rejected').length,
+      durationMs: Math.round(performance.now() - started),
+      invariant:
+        product.stock >= 0 && product.stock + results.filter((result) => result.status === 'fulfilled').length === requests
+          ? 'PASS: version check prevents lost updates and overselling'
+          : 'FAIL: optimistic locking invariant failed',
+    };
+    await this.logger.write('optimistic-lock', 'optimistic_lock_run_completed', summary);
     return summary;
   }
 
@@ -476,7 +553,8 @@ export class DemoController {
   }
 
   private async runStress(requests: number) {
-    await this.database.db.update(products).set({ stock: requests }).where(eq(products.id, 1));
+    await this.database.db.update(products).set({ stock: requests, version: 0, updatedAt: new Date() }).where(eq(products.id, 1));
+    await this.redis.del('products:popular:v1', 'product:1');
     const before = await this.snapshot();
     const started = performance.now();
     const results = await Promise.allSettled(

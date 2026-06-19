@@ -23,6 +23,7 @@ export const products = pgTable('products', {
   name: text('name').notNull(),
   price: numeric('price', { precision: 12, scale: 2 }).notNull(),
   stock: integer('stock').notNull(),
+  version: integer('version').default(0).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
@@ -61,7 +62,7 @@ export const dailySalesSummaries = pgTable('daily_sales_summaries', {
   totalRevenue: numeric('total_revenue', { precision: 12, scale: 2 }).notNull(),
   chunkSize: integer('chunk_size').notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
-});
+}, (table) => [uniqueIndex('daily_sales_summaries_sales_date_idx').on(table.salesDate)]);
 
 export const usersRelations = relations(users, ({ one, many }) => ({
   wallet: one(wallets),

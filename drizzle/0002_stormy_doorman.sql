@@ -1,0 +1,2 @@
+ALTER TABLE "products" ADD COLUMN "version" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "daily_sales_summaries_sales_date_idx" ON "daily_sales_summaries" USING btree ("sales_date");

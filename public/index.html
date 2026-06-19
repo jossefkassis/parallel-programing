@@ -70,11 +70,13 @@
         <h2>6. Distributed cache</h2>
         <button class="secondary" onclick="clearPopularCache()">Clear cache</button>
         <button onclick="getPopularProducts()">Popular products cache</button>
+        <button onclick="getProductDetail()">Product detail cache</button>
         <pre id="cache"></pre>
       </section>
       <section>
-        <h2>7. Redis inventory lock</h2>
+        <h2>7. Inventory locking</h2>
         <button onclick="post('/api/demo/lock/redis')">Redis lock</button>
+        <button onclick="post('/api/demo/lock/optimistic')">Optimistic lock</button>
         <button onclick="post('/api/demo/compare/locking')">Compare unsafe vs Redis lock</button>
         <pre id="redis-lock"></pre>
       </section>
@@ -82,6 +84,8 @@
         <h2>8. ACID transaction</h2>
         <button onclick="acidDemo(false)">Commit transaction</button>
         <button onclick="acidDemo(true)">Force rollback</button>
+        <button onclick="acidDirect(false)">Direct checkout commit</button>
+        <button onclick="acidDirect(true)">Direct checkout rollback</button>
         <pre id="acid"></pre>
       </section>
       <section>
@@ -117,7 +121,7 @@
         if (path.includes('compare/resource')) return 'compare-resource';
         if (path.includes('compare/checkout')) return 'compare-checkout';
         if (path.includes('compare/batch')) return 'compare-batch';
-        if (path.includes('lock/redis') || path.includes('compare/locking')) return 'redis-lock';
+        if (path.includes('lock/redis') || path.includes('lock/optimistic') || path.includes('compare/locking')) return 'redis-lock';
         if (path.includes('benchmark')) return 'benchmark';
         if (path.includes('race')) return 'race';
         if (path.includes('resource')) return 'resource';
@@ -153,6 +157,13 @@
         const secondData = await second.json();
         document.getElementById('cache').textContent = JSON.stringify({ firstCall: firstData, secondCall: secondData }, null, 2);
       }
+      async function getProductDetail() {
+        const first = await fetch('/api/products/1');
+        const firstData = await first.json();
+        const second = await fetch('/api/products/1');
+        const secondData = await second.json();
+        document.getElementById('cache').textContent = JSON.stringify({ firstCall: firstData, secondCall: secondData }, null, 2);
+      }
       async function clearPopularCache() {
         const response = await fetch('/api/products/popular/cache', { method: 'DELETE' });
         const data = await response.json();
@@ -163,6 +174,16 @@
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ fail })
+        });
+        const data = await response.json();
+        document.getElementById('acid').textContent = JSON.stringify(data, null, 2);
+        refresh();
+      }
+      async function acidDirect(failPayment) {
+        const response = await fetch('/api/demo/checkout/acid-direct', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ userId: 1, items: [{ productId: 1, quantity: 1 }], failPayment })
         });
         const data = await response.json();
         document.getElementById('acid').textContent = JSON.stringify(data, null, 2);

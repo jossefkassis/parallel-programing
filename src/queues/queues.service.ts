@@ -2,7 +2,7 @@ import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { Queue, Worker } from 'bullmq';
 import IORedis from 'ioredis';
 import { DatabaseService } from '../db/database.service';
-import { dailySalesSummaries, jobLogs } from '../db/schema';
+import { jobLogs } from '../db/schema';
 import { ExperimentLoggerService } from '../logging/experiment-logger.service';
 
 @Injectable()
@@ -72,7 +72,8 @@ export class QueuesService implements OnModuleInit, OnModuleDestroy {
 
   private async processDailySalesSummary(payload: { salesDate: string }) {
     const chunkSize = 500;
-    const salesDate = new Date(payload.salesDate);
+    const salesDay = payload.salesDate.slice(0, 10);
+    const salesDate = new Date(`${salesDay}T00:00:00.000Z`);
     let offset = 0;
     let processedOrders = 0;
     let totalRevenue = 0;
@@ -80,7 +81,7 @@ export class QueuesService implements OnModuleInit, OnModuleDestroy {
     while (true) {
       const rows = await this.database.pool.query(
         'SELECT id, total FROM orders WHERE created_at::date = $1::date ORDER BY id LIMIT $2 OFFSET $3',
-        [salesDate.toISOString().slice(0, 10), chunkSize, offset],
+        [salesDay, chunkSize, offset],
       );
       if (rows.rowCount === 0) break;
       processedOrders += rows.rowCount ?? 0;
@@ -94,12 +95,18 @@ export class QueuesService implements OnModuleInit, OnModuleDestroy {
       });
     }
 
-    await this.database.db.insert(dailySalesSummaries).values({
-      salesDate,
-      processedOrders,
-      totalRevenue: totalRevenue.toFixed(2),
-      chunkSize,
-    });
+    await this.database.pool.query(
+      `
+        INSERT INTO daily_sales_summaries (sales_date, processed_orders, total_revenue, chunk_size)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (sales_date)
+        DO UPDATE SET
+          processed_orders = EXCLUDED.processed_orders,
+          total_revenue = EXCLUDED.total_revenue,
+          chunk_size = EXCLUDED.chunk_size
+      `,
+      [salesDate, processedOrders, totalRevenue.toFixed(2), chunkSize],
+    );
     await this.logJob('daily-sales-summary', { salesDate: payload.salesDate, processedOrders, totalRevenue, chunkSize });
     await this.logger.write('batch', 'daily_sales_summary_completed', { processedOrders, totalRevenue, chunkSize });
     return { processedOrders, totalRevenue, chunkSize };

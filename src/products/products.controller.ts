@@ -1,5 +1,5 @@
-import { Body, Controller, Delete, Get, Post } from '@nestjs/common';
-import { asc } from 'drizzle-orm';
+import { Body, Controller, Delete, Get, NotFoundException, Param, ParseIntPipe, Post } from '@nestjs/common';
+import { asc, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { DatabaseService } from '../db/database.service';
 import { products } from '../db/schema';
@@ -58,6 +58,23 @@ export class ProductsController {
     await this.redis.del('products:popular:v1');
     await this.logger.write('cache', 'popular_products_cache_cleared', { key: 'products:popular:v1' });
     return { cleared: true, key: 'products:popular:v1', nextRequest: 'miss' };
+  }
+
+  @Get(':id')
+  async detail(@Param('id', ParseIntPipe) id: number) {
+    const cacheKey = `product:${id}`;
+    const cached = await this.redis.getJson<unknown>(cacheKey);
+    if (cached) {
+      await this.logger.write('cache', 'product_detail_cache_hit', { key: cacheKey, productId: id });
+      return { source: 'redis-cache', cache: 'hit', product: cached };
+    }
+
+    const [product] = await this.database.db.select().from(products).where(eq(products.id, id));
+    if (!product) throw new NotFoundException('Product not found');
+
+    await this.redis.setJson(cacheKey, product, 60);
+    await this.logger.write('cache', 'product_detail_cache_miss', { key: cacheKey, productId: id, ttlSeconds: 60 });
+    return { source: 'postgres-db', cache: 'miss', product };
   }
 
   @Post()

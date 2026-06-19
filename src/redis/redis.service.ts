@@ -23,8 +23,9 @@ export class RedisService implements OnModuleDestroy {
     await this.client.set(key, JSON.stringify(value), 'EX', ttlSeconds);
   }
 
-  async del(key: string) {
-    await this.client.del(key);
+  async del(...keys: string[]) {
+    if (keys.length === 0) return 0;
+    return this.client.del(...keys);
   }
 
   async withLock<T>(key: string, ttlMs: number, work: () => Promise<T>, waitMs = 5000): Promise<T> {
